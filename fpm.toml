@@ -1,0 +1,23 @@
+[build]
+  auto-executables = true
+  auto-tests = false
+  auto-examples = false
+
+[dependencies]
+  json-fortran = { git = "https://github.com/jacobwilliams/json-fortran" }
+
+[install]
+  library = false
+
+[fortran]
+  implicit-typing = false
+  implicit-external = false
+  source-form = "free"
+
+[[executable]]
+  name = "fortrat"
+  source-dir = "src"
+  main = "main.f90"
+
+[link]
+  libraries = ["curl"]
