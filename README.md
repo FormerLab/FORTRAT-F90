@@ -3,7 +3,7 @@
 **AT Protocol lexicon explorer — written in Fortran**
 
 ![FORTRAT-F90 in cool-retro-term](assets/screenshot-retro.png)
-![FORTRAT-F90 in a modern terminal](assets/screenshot-modern.png)
+![FORTRAT-F90 in a modern terminal](assets/screenshot_modern.png)
 
 ---
 
