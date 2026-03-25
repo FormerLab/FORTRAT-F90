@@ -22,6 +22,12 @@ module fortrat_tui
       integer(c_int), intent(out) :: cols, rows
     end subroutine
 
+    subroutine fortrat_write_buf(buf, len) bind(c, name='fortrat_write_buf')
+      import c_int, c_char
+      integer(c_int), value             :: len
+      character(kind=c_char), intent(in):: buf(len)
+    end subroutine
+
     subroutine fortrat_clear_screen() bind(c, name='fortrat_clear_screen')
     end subroutine
 

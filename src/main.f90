@@ -9,7 +9,8 @@ program fortrat
 
   type(lex_graph_t) :: graph
   type(app_state_t) :: state
-  integer           :: key, cols, rows
+  integer           :: key, cols, rows, frame_skip
+  logical           :: dirty
 
   ! ── Init state ──
   state%groups      = .true.     ! all ns groups visible
@@ -43,28 +44,44 @@ program fortrat
 
   state%mode     = MODE_GRAPH
   state%status_msg = 'READY'
+  frame_skip = 0
 
   ! ── Main event loop ──
   do while (.true.)
+    dirty = .false.
 
-    ! ── Simulation tick ──
-    call sim_tick(graph, state%graph_w, state%graph_h)
+    ! ── Simulation tick (only while alpha > 0) ──
+    if (alpha > 0.0d0) then
+      call sim_tick(graph, state%graph_w, state%graph_h)
+      dirty = .true.
+    end if
 
     ! ── Read input (non-blocking) ──
     key = tui_read_key()
-    if (key /= 0) call handle_key(key, graph, state)
+    if (key /= 0) then
+      call handle_key(key, graph, state)
+      dirty = .true.
+    end if
 
-    ! ── Render ──
-    call render_clear(state%term_w, state%term_h)
-    call render_ruler(state%term_w, state%term_h)
-    call render_header(state%term_w, state%term_h, state%graph_w + 1)
-    call render_graph_pane(graph, state, state%graph_w, state%term_h, 2)
-    call render_inspect_pane(graph, state, state%graph_w + 2, state%term_w, state%term_h)
-    call render_status(state, graph, state%term_w, state%term_h)
-    call render_flush(state%term_w, state%term_h)
+    ! ── Render only when something changed, or every 8 frames as keepalive ──
+    frame_skip = frame_skip + 1
+    if (dirty .or. frame_skip >= 8) then
+      frame_skip = 0
+      call render_clear(state%term_w, state%term_h)
+      call render_ruler(state%term_w, state%term_h)
+      call render_header(state%term_w, state%term_h, state%graph_w + 1)
+      call render_graph_pane(graph, state, state%graph_w, state%term_h, 2)
+      call render_inspect_pane(graph, state, state%graph_w + 2, state%term_w, state%term_h)
+      call render_status(state, graph, state%term_w, state%term_h)
+      call render_flush(state%term_w, state%term_h)
+    end if
 
-    ! ── Frame sleep 200ms ──
-    call usleep_f(200000)
+    ! ── Frame sleep: faster while settling, slower when idle ──
+    if (alpha > 0.0d0) then
+      call usleep_f(100000)   ! 100ms while sim running (~10fps)
+    else
+      call usleep_f(50000)    ! 50ms when idle — responsive to keys
+    end if
   end do
 
 contains

@@ -12,7 +12,7 @@ module fortrat_simulate
   real(real64), parameter :: ALPHA_DECAY  =   0.02d0
   real(real64), parameter :: VELOCITY_DEC =   0.6d0   ! velocity decay per tick
 
-  real(real64), save :: alpha = 1.0d0
+  real(real64), save, public :: alpha = 1.0d0
 
 contains
 
@@ -134,7 +134,7 @@ contains
 
     ! ── Cool down ──
     alpha = alpha * (1.0d0 - ALPHA_DECAY)
-    if (alpha < 0.001d0) alpha = 0.001d0
+    if (alpha < 0.0005d0) alpha = 0.0d0  ! fully settled
   end subroutine
 
   ! Pre-warm: run N ticks with high alpha to settle initial layout
@@ -146,7 +146,8 @@ contains
     do i = 1, n_ticks
       call sim_tick(graph, w, h)
     end do
-    alpha = 0.3d0  ! keep some heat for live animation
+    ! Leave a little heat so it finishes settling live, but not too much
+    if (alpha > 0.05d0) alpha = 0.05d0
   end subroutine
 
 end module fortrat_simulate

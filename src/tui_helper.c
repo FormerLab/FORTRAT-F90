@@ -56,6 +56,11 @@ void fortrat_write_at(int row, int col, const char *str, int len) {
     xwrite(STDOUT_FILENO, str, len);
 }
 
+/* Write an entire pre-built frame buffer in one shot */
+void fortrat_write_buf(const char *buf, int len) {
+    xwrite(STDOUT_FILENO, buf, len);
+}
+
 void fortrat_flush(void) {
     fsync(STDOUT_FILENO);
 }

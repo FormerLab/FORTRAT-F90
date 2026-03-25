@@ -83,22 +83,23 @@ contains
   end subroutine
 
   ! Draw a node sigil at position
-  subroutine render_node(cx, cy, sigil, color, selected, w, h)
+  subroutine render_node(cx, cy, lbl, color, selected, w, h)
     integer,          intent(in) :: cx, cy, w, h
-    character(len=3), intent(in) :: sigil
-    character(len=*), intent(in) :: color
+    character(len=*), intent(in) :: lbl, color
     logical,          intent(in) :: selected
-    character(len=5) :: label
-    integer :: i
-
+    integer :: i, llen, start_col
+    character(len=12) :: display
+    llen = min(len_trim(lbl), 10)  ! cap at 10 chars
     if (selected) then
-      label = '['//sigil//']'
+      display = '['//lbl(1:llen)//']'
+      llen = llen + 2
     else
-      label = ' '//sigil//' '
+      display = lbl(1:llen)
     end if
-
-    do i = 1, 5
-      call render_set(cx - 2 + i, cy, label(i:i), color, selected, w, h)
+    ! Centre the label on cx
+    start_col = cx - llen/2
+    do i = 1, llen
+      call render_set(start_col + i - 1, cy, display(i:i), color, selected, w, h)
     end do
   end subroutine
 
@@ -114,52 +115,74 @@ contains
     end do
   end subroutine
 
-  ! Flush frame to terminal — clear screen then write only non-space cells
+  ! Flush frame — build entire output as one buffer, write atomically (no flicker)
   subroutine render_flush(w, h)
-    use fortrat_tui, only: fortrat_write_at, fortrat_flush, fortrat_clear_screen
+    use fortrat_tui, only: fortrat_write_buf, fortrat_flush
     use iso_c_binding
     integer, intent(in) :: w, h
-    integer             :: c, r, clen
-    character(len=512)  :: cell_str
-    integer(c_int)      :: ci, ri
+    ! Frame buffer: enough for clear + all cells
+    ! Each cell: ~20 bytes (cursor pos + color + char + reset)
+    ! Max cells: 300*100 = 30000 * 20 = 600KB — use allocatable
+    character(len=1), allocatable :: fbuf(:)
+    integer :: fbuf_size, fpos
+    integer :: c, r, cl
+    character(len=32) :: pos_seq
+    integer :: pos_len
 
-    ! Clear screen once per frame
-    call fortrat_clear_screen()
+    fbuf_size = 9 + w * h * 16   ! home seq + per cell: color+bold+char+reset ~16 bytes
+    allocate(fbuf(fbuf_size))
+    fpos = 0
 
-    ! Write only non-space cells individually — each as ESC[row;colH + color + char
+    ! Start with: hide cursor, home cursor only (no clear — prevents scroll)
+    call fbuf_append(fbuf, fpos, char(27)//'[?25l', 6)  ! hide cursor
+    call fbuf_append(fbuf, fpos, char(27)//'[H',    3)  ! cursor home row 1 col 1
+
+    ! Write all cells — including spaces — so previous frame is fully overwritten
     do r = 1, h
+      ! Move to start of row
+      write(pos_seq, '(a,i0,a,i0,a)') char(27)//'[', r, ';1H'
+      pos_len = len_trim(pos_seq)
+      call fbuf_append(fbuf, fpos, pos_seq(1:pos_len), pos_len)
+
       do c = 1, w
-        if (cur_frame(c,r)%ch == ' ' .and. len_trim(cur_frame(c,r)%color) == 0) cycle
-
-        ! Build: color + bold + char
-        clen = 0
+        ! Color
         if (len_trim(cur_frame(c,r)%color) > 0) then
-          block
-            integer :: cl
-            cl = len_trim(cur_frame(c,r)%color)
-            cell_str(1:cl) = cur_frame(c,r)%color(1:cl)
-            clen = cl
-          end block
+          cl = len_trim(cur_frame(c,r)%color)
+          call fbuf_append(fbuf, fpos, cur_frame(c,r)%color(1:cl), cl)
+        else
+          call fbuf_append(fbuf, fpos, char(27)//'[0m', 4)
         end if
+        ! Bold
         if (cur_frame(c,r)%bold) then
-          cell_str(clen+1:clen+4) = char(27)//'[1m'
-          clen = clen + 4
+          call fbuf_append(fbuf, fpos, char(27)//'[1m', 4)
         end if
-        cell_str(clen+1:clen+1) = cur_frame(c,r)%ch
-        clen = clen + 1
-        ! Append reset
-        cell_str(clen+1:clen+4) = char(27)//'[0m'
-        clen = clen + 4
-
-        ri = int(r, c_int)
-        ci = int(c, c_int)
-        call fortrat_write_at(ri, ci, cell_str, int(clen, c_int))
+        ! Character
+        call fbuf_append(fbuf, fpos, cur_frame(c,r)%ch, 1)
         prv_frame(c,r) = cur_frame(c,r)
+        if (fpos > fbuf_size - 64) exit
       end do
+      ! Reset at end of row
+      call fbuf_append(fbuf, fpos, char(27)//'[0m', 4)
+      if (fpos > fbuf_size - 64) exit
     end do
 
+    ! Single write call — atomic, no flicker
+    call fortrat_write_buf(fbuf, int(fpos, c_int))
     call fortrat_flush()
+    deallocate(fbuf)
     first_frame = .false.
+  end subroutine
+
+  subroutine fbuf_append(buf, pos, str, n)
+    character(len=1), intent(inout) :: buf(:)
+    integer,          intent(inout) :: pos
+    character(len=*), intent(in)    :: str
+    integer,          intent(in)    :: n
+    integer :: i
+    do i = 1, n
+      pos = pos + 1
+      if (pos <= size(buf)) buf(pos) = str(i:i)
+    end do
   end subroutine
 
   ! ── Main graph pane render ──
@@ -168,11 +191,9 @@ contains
     type(app_state_t), intent(in) :: state
     integer,           intent(in) :: w, h, row_off
     integer      :: i, cx, cy, vis_idx
-    character(len=3)  :: sigil
     character(len=16) :: col
     logical      :: selected, dimmed
     integer      :: visible_nodes(MAX_NODES), n_vis
-
     ! Build visible node index list
     n_vis = 0
     do i = 1, graph%n_nodes
@@ -203,13 +224,12 @@ contains
       vis_idx = vis_idx + 1
       cx = nint(graph%nodes(i)%x)
       cy = nint(graph%nodes(i)%y) + row_off
-      sigil = KIND_SIGIL(graph%nodes(i)%kind)(1:3)
       col   = ns_color(graph%nodes(i)%ns_group)
       selected = (vis_idx == state%cursor_idx .or. i == state%selected_idx)
       dimmed   = len_trim(state%search_query) > 0 .and. &
                  index(graph%nodes(i)%id, trim(state%search_query)) == 0
       if (dimmed) col = GREEN_DIM
-      call render_node(cx, cy, sigil, col, selected, w, h)
+      call render_node(cx, cy, trim(graph%nodes(i)%label), col, selected, w, h)
     end do
   end subroutine
 
@@ -218,14 +238,13 @@ contains
     type(lex_graph_t), intent(in) :: graph
     type(app_state_t), intent(in) :: state
     integer,           intent(in) :: col_off, w, h
-    integer           :: row, i, idx, vis_idx, n_out
+    integer           :: row, i, idx, vis_idx, n_out, pane_w
     character(len=ID_LEN)   :: out_ids(64)
     character(len=3)  :: sigil
-    character(len=w)  :: divider
 
-    row = 2  ! start below pane header
+    pane_w = w - col_off
+    row = 2
 
-    ! Find actual node index from cursor
     idx = 0
     vis_idx = 0
     do i = 1, graph%n_nodes
@@ -233,7 +252,6 @@ contains
       vis_idx = vis_idx + 1
       if (vis_idx == state%cursor_idx) then; idx = i; exit; end if
     end do
-
     if (state%selected_idx > 0) idx = state%selected_idx
 
     if (idx == 0) then
@@ -250,11 +268,8 @@ contains
     sigil = KIND_SIGIL(graph%nodes(idx)%kind)(1:3)
     call render_text(col_off, row, 'SUBROUTINE INSPECT('//sigil//')', GREEN_BR, .true., w, h)
     row = row + 1
-
-    divider = repeat('-', w - col_off)
-    call render_text(col_off, row, divider, GREEN_DIM, .false., w, h)
+    call render_text(col_off, row, repeat('-', pane_w), GREEN_DIM, .false., w, h)
     row = row + 1
-
     call render_text(col_off, row, trim(graph%nodes(idx)%id), GREEN_BR, .true., w, h)
     row = row + 2
 
@@ -270,21 +285,29 @@ contains
     end if
     row = row + 1
 
-    ! Description
-    if (len_trim(graph%nodes(idx)%doc) > 0) then
+    ! Description with word-wrap
+    if (len_trim(graph%nodes(idx)%doc) > 0 .and. row < h - 3) then
       block
-        integer :: doc_len, max_len
-        doc_len = len_trim(graph%nodes(idx)%doc)
-        max_len = min(doc_len, w - col_off - 6)
-        call render_text(col_off, row, &
-          'C     '//graph%nodes(idx)%doc(1:max_len), &
-          GREEN_DIM, .false., w, h)
+        integer  :: dlen, lw, pos, npos
+        character(len=DOC_LEN) :: doc
+        doc  = trim(graph%nodes(idx)%doc)
+        dlen = len_trim(doc)
+        lw   = pane_w - 6
+        pos  = 1
+        call render_text(col_off, row, 'C     DESCRIPTION', GREEN_DIM, .false., w, h)
+        row = row + 1
+        do while (pos <= dlen .and. row < h - 3)
+          npos = min(pos + lw - 1, dlen)
+          call render_text(col_off, row, 'C     '//doc(pos:npos), GREEN_DIM, .false., w, h)
+          pos = npos + 1
+          row = row + 1
+        end do
+        row = row + 1
       end block
-      row = row + 2
     end if
 
     ! Fields
-    if (graph%nodes(idx)%n_fields > 0) then
+    if (graph%nodes(idx)%n_fields > 0 .and. row < h - 3) then
       call render_text(col_off, row, 'C     FIELDS', GREEN_DIM, .false., w, h)
       row = row + 1
       do i = 1, min(graph%nodes(idx)%n_fields, 8)
@@ -319,7 +342,6 @@ contains
       end if
     end if
 
-    ! Footer
     call render_text(col_off, h-1, 'END SUBROUTINE INSPECT', GREEN_DIM, .false., w, h)
   end subroutine
 
